@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body {
+    margin: 0; padding: 0; overflow: hidden;
+    background: transparent;
+    width: 100vw; height: 100vh;
+    font-family: -apple-system, "Helvetica Neue", sans-serif;
+    user-select: none; pointer-events: none;
+  }
+  .badge {
+    position: absolute;
+    transform: translateX(-50%);
+    background: rgba(10, 10, 14, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 8px;
+    padding: 3px 10px;
+    color: #fff;
+    font-size: 17px;
+    font-weight: 700;
+    text-align: center;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  }
+  .badge .sub { font-size: 11px; font-weight: 400; opacity: 0.75; display: block; }
+  .good { color: #6fe08b; }
+  .mid  { color: #ffd76e; }
+  .bad  { color: #ff7d7d; }
+  .na   { color: #9a9aa3; }
+  .badge.warn { border-color: rgba(255, 82, 82, 0.95); }
+  #status {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    background: rgba(10,10,14,0.75); color: #ddd; border-radius: 6px;
+    padding: 4px 12px; font-size: 13px; display: none;
+  }
+</style>
+</head>
+<body>
+<div id="status"></div>
+<script>
+  const { ipcRenderer } = require('electron');
+  const statusEl = document.getElementById('status');
+
+  function clearBadges() {
+    document.querySelectorAll('.badge').forEach(el => el.remove());
+  }
+
+  ipcRenderer.on('labels', (_e, labels) => {
+    clearBadges();
+    for (const l of labels) {
+      const el = document.createElement('div');
+      el.className = 'badge' + (l.warn ? ' warn' : '');
+      const cls = l.winRate === null ? 'na' : l.winRate >= 50 ? 'good' : l.winRate >= 40 ? 'mid' : 'bad';
+      el.innerHTML = '<span class="' + cls + '">' + l.text + '</span>' +
+        (l.sub ? '<span class="sub">' + l.sub + '</span>' : '');
+      el.style.left = l.x + 'px';
+      el.style.top = l.y + 'px';
+      document.body.appendChild(el);
+    }
+  });
+
+  ipcRenderer.on('clear', () => { clearBadges(); statusEl.style.display = 'none'; });
+
+  ipcRenderer.on('status', (_e, msg) => {
+    if (msg) { statusEl.textContent = msg; statusEl.style.display = 'block'; }
+    else statusEl.style.display = 'none';
+  });
+</script>
+</body>
+</html>

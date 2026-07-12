@@ -1,0 +1,20 @@
+{
+  "name": "sts2-overlay",
+  "version": "0.1.0",
+  "description": "Purely visual overlay for Slay the Spire 2: shows card win% from sts2.fun on card reward screens",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "fresh": "FORCE_REFRESH=1 electron .",
+    "dump": "DUMP=1 electron .",
+    "refresh-data": "REFRESH_ONLY=1 electron ."
+  },
+  "author": "Joel",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.0.0"
+  },
+  "dependencies": {
+    "tesseract.js": "^5.1.0"
+  }
+}
