@@ -24,12 +24,17 @@
     white-space: nowrap;
     box-shadow: 0 2px 8px rgba(0,0,0,0.5);
   }
-  .badge .sub { font-size: 11px; font-weight: 400; opacity: 0.75; display: block; }
-  .good { color: #6fe08b; }
-  .mid  { color: #ffd76e; }
-  .bad  { color: #ff7d7d; }
-  .na   { color: #9a9aa3; }
-  .badge.warn { border-color: rgba(255, 82, 82, 0.95); }
+  /* "Good Upgrade" line under the tier. Deliberately not green: the tier text
+     already uses the green end of the scale (A/B), and two different greens in
+     one badge read as related when they aren't. */
+  .badge .sub {
+    font-size: 12px; font-weight: 600; display: block;
+    color: #cfd4dc; margin-top: 1px; letter-spacing: 0.2px;
+  }
+  .badge .sub .check { color: #6fe08b; margin-right: 3px; }
+  /* Tier text is coloured inline (see TIER_COLORS); this is only for a card whose
+     tier we couldn't determine. */
+  .na { color: #9a9aa3; }
   #status {
     position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
     background: rgba(10,10,14,0.75); color: #ddd; border-radius: 6px;
@@ -47,14 +52,42 @@
     document.querySelectorAll('.badge').forEach(el => el.remove());
   }
 
+  // Tier colour for a badge. The tier list's own colours are tuned for a light page
+  // (C = #a9792c) and read muddy on our dark badge, and its A (#6ba036) and B
+  // (#92a036) are close enough that they blur together at badge size. So we key off
+  // tier order for the actual swatch — a wider, dark-background-friendly ramp in the
+  // same blue→green→yellow→orange→red order the site uses — and fall back to
+  // brightening the site's colour if we ever see a tier order we don't know.
+  const TIER_COLORS = ['#55a8e0', '#63d97a', '#c8d64a', '#e8a83a', '#ec7f45', '#ef5f5f'];
+
+  function brighten(hex, amount = 0.42) {
+    const m = /^#([0-9a-f]{6})$/i.exec(hex || '');
+    if (!m) return null;
+    const n = parseInt(m[1], 16);
+    const mix = c => Math.round(c + (255 - c) * amount);
+    return 'rgb(' + [mix(n >> 16 & 255), mix(n >> 8 & 255), mix(n & 255)].join(',') + ')';
+  }
+
+  function tierColor(l) {
+    if (l.tierOrder !== null && TIER_COLORS[l.tierOrder]) return TIER_COLORS[l.tierOrder];
+    return brighten(l.color);
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  }
+
   ipcRenderer.on('labels', (_e, labels) => {
     clearBadges();
     for (const l of labels) {
       const el = document.createElement('div');
-      el.className = 'badge' + (l.warn ? ' warn' : '');
-      const cls = l.winRate === null ? 'na' : l.winRate >= 50 ? 'good' : l.winRate >= 40 ? 'mid' : 'bad';
-      el.innerHTML = '<span class="' + cls + '">' + l.text + '</span>' +
-        (l.sub ? '<span class="sub">' + l.sub + '</span>' : '');
+      el.className = 'badge';
+      // l.colored is false when useTierColors is off — badge stays plain white.
+      const rgb = l.colored === false ? null : tierColor(l);
+      const style = rgb ? ' style="color:' + rgb + '"' : '';
+      const cls = l.tier ? '' : ' class="na"'; // grey only when there's no tier at all
+      el.innerHTML = '<span' + cls + style + '>' + esc(l.text) + '</span>' +
+        (l.sub ? '<span class="sub"><span class="check">✓</span>' + esc(l.sub) + '</span>' : '');
       el.style.left = l.x + 'px';
       el.style.top = l.y + 'px';
       document.body.appendChild(el);

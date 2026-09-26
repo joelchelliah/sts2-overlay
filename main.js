@@ -1,6 +1,7 @@
-// STS2 Overlay — purely visual, click-through overlay showing card win% from sts2.fun.
+// STS2 Overlay — purely visual, click-through overlay showing card tier ratings
+// from Baalorlord's tier lists on sts2.untapped.gg.
 // Hotkey (default Cmd+Shift+1) on a card reward screen: screenshots the game,
-// OCRs the card names, and shows a win% badge under each card.
+// OCRs the card names, and shows a tier badge (e.g. "B - tier") above each card.
 const { app, BrowserWindow, Tray, Menu, globalShortcut, screen, nativeImage } = require('electron');
 const path = require('path');
 const config = require('./src/config');
@@ -16,6 +17,39 @@ let tray = null;
 let hideTimer = null;
 let cardData = null;
 let busy = false;
+
+// ── Menu bar indicator. The tray title is the only always-visible sign the app is
+// alive, so it doubles as a status light: at a glance you can tell the difference
+// between "running and watching", "working right now", "showing N badges", and
+// "something broke" — which otherwise all looked identical (a static "S2").
+const TRAY_STATES = {
+  idle:     { title: 'S2 ●',  tip: 'Watching for card screens' },
+  scanning: { title: 'S2 ◉',  tip: 'Scanning…' },
+  paused:   { title: 'S2 ⏸',  tip: 'Auto-scan off — use the hotkey to scan' },
+  error:    { title: 'S2 ⚠',  tip: 'Last scan failed — see the console' }
+};
+let trayState = 'idle';
+let lastHitCount = 0;
+
+function setTrayState(state, detail) {
+  trayState = state;
+  if (state === 'hit') lastHitCount = detail;
+  if (!tray) return;
+  if (state === 'hit') {
+    // Card count is the most useful confirmation: badges are on screen right now.
+    tray.setTitle(`S2 ✓${detail}`);
+    tray.setToolTip(`STS2 Overlay — showing ${detail} card${detail === 1 ? '' : 's'}`);
+    return;
+  }
+  const s = TRAY_STATES[state] || TRAY_STATES.idle;
+  tray.setTitle(s.title);
+  tray.setToolTip('STS2 Overlay — ' + s.tip);
+}
+
+// Back to whatever resting state matches the config: watching, or paused.
+function restTrayState() {
+  setTrayState(config.get().autoScan ? 'idle' : 'paused');
+}
 
 function createOverlay() {
   const { bounds } = screen.getPrimaryDisplay();
@@ -46,11 +80,13 @@ function hideOverlay() {
   clearTimeout(hideTimer);
   send('clear');
   if (overlayWin) overlayWin.hide();
+  restTrayState();
 }
 
 async function scan(auto = false) {
   if (busy) return;
   busy = true;
+  setTrayState('scanning');
   const cfg = config.get();
   try {
     send('clear');
@@ -66,6 +102,7 @@ async function scan(auto = false) {
     if (!matches.length) {
       if (auto) hideOverlay();           // not a card screen — stay silent
       else showStatus('No cards recognized', 2500);
+      restTrayState();
       return;
     }
 
@@ -75,51 +112,38 @@ async function scan(auto = false) {
     const isShop = rows.length > 1;
     const off = isShop ? cfg.shopBadgeOffsets : cfg.badgeOffsets;
 
-    // Two badges per card: base win% above the card, upgraded win% below it,
-    // regardless of which variant is actually offered. Badges share row-level
-    // y positions: anchored at each row's median name top (names are aligned),
-    // offset by fractions of screen height (game UI scales with resolution).
+    // One tier badge per card, above the card name. Badges share row-level y
+    // positions: anchored at each row's median name top (names are aligned),
+    // offset by a fraction of screen height (game UI scales with resolution).
     const labels = rows.flatMap(row => {
       const ys = row.map(m => m.line.y).sort((a, b) => a - b);
       const anchorY = ys[Math.floor(ys.length / 2)];
-      const yAbove = (anchorY + off.above * shot.height) / shot.scale;
-      const yBelow = (anchorY + off.below * shot.height) / shot.scale;
-      return row.flatMap(m => {
-        const cx = (m.line.x + m.line.w / 2) / shot.scale;
-        // Sample-size tiers: >=reliable normal; >=minimum win% + warning emoji,
-        // red border; <minimum "–" with red border. No data at all: plain "–".
-        const t = cfg.sampleThresholds;
-        const badge = (y, winRate, pickRate, samples) => {
-          const tooFew = samples !== null && samples < t.minimum;
-          const wr = tooFew ? null : winRate;
-          const shaky = wr !== null && samples !== null && samples < t.reliable;
-          return [{
-            x: cx,
-            y,
-            winRate: wr,
-            warn: tooFew || shaky, // red border
-            text: wr === null ? '–' : shaky ? `${wr}% ⚠️` : `${wr}%`,
-            sub: cfg.showPickRate && pickRate !== null ? `pick ${pickRate}%` : null
-          }];
-        };
-        return [
-          ...badge(yAbove, m.card.winRate, m.card.pickRate, m.card.samples ?? null),
-          ...badge(yBelow, m.card.upgradedWinRate ?? null, m.card.upgradedPickRate ?? null, m.card.upgradedSamples ?? null)
-        ];
-      });
+      const y = (anchorY + off.above * shot.height) / shot.scale;
+      return row.map(m => ({
+        x: (m.line.x + m.line.w / 2) / shot.scale,
+        y,
+        text: m.card.tier ? `${m.card.tier} - tier` : '–',
+        tier: m.card.tier || null,
+        tierOrder: m.card.tierOrder ?? null,
+        color: m.card.tierColor || null,   // the site's own colour, as a fallback
+        colored: cfg.useTierColors !== false,
+        sub: cfg.showGoodUpgrade && m.card.goodUpgrade ? 'Good Upgrade' : null // overlay prepends the ✓
+      }));
     });
 
     send('status', null);
     send('labels', labels);
     overlayWin.showInactive();
+    setTrayState('hit', matches.length);
     console.log(`[scan] ${isShop ? 'shop' : 'reward'}:`, matches.map(m =>
-      `${m.card.name}=${m.card.winRate}%/${m.card.upgradedWinRate ?? '—'}%+ (${m.score.toFixed(2)})`).join(', '));
+      `${m.card.name}=${m.card.tier}${m.card.goodUpgrade ? '+up' : ''} (${m.score.toFixed(2)})`).join(', '));
 
     clearTimeout(hideTimer);
     // auto-scan badges persist until the screen changes; manual ones time out
     if (!auto && cfg.autoHideSeconds > 0) hideTimer = setTimeout(hideOverlay, cfg.autoHideSeconds * 1000);
   } catch (e) {
     console.error('[scan]', e);
+    setTrayState('error');
     if (!auto) showStatus('Error: ' + e.message.slice(0, 80), 4000);
   } finally {
     busy = false;
@@ -138,7 +162,8 @@ function setAutoScan(enabled) {
   clearInterval(autoTimer);
   autoTimer = null;
   prevThumb = null;
-  if (!enabled) return;
+  if (!enabled) { setTrayState('paused'); return; }
+  restTrayState();
   dirty = true;
   const cfg = config.get();
   autoTimer = setInterval(async () => {
@@ -166,6 +191,7 @@ async function refreshData(force) {
     buildTray();
   } catch (e) {
     console.error('[data]', e.message);
+    setTrayState('error');
     showStatus('Data refresh failed: ' + e.message.slice(0, 60), 5000);
   }
 }
@@ -175,11 +201,14 @@ function buildTray() {
   if (!tray) {
     // simple 16x16 dot as tray icon
     tray = new Tray(nativeImage.createEmpty());
-    tray.setTitle('S2'); // text-based menu bar item — always visible
-    tray.setToolTip('STS2 Overlay');
   }
+  // Rebuilding the menu must not blank the indicator — repaint the current state.
+  setTrayState(trayState, trayState === 'hit' ? lastHitCount : undefined);
+  const gameVersion = cardData && cardData.sources
+    ? Object.values(cardData.sources).map(s => s.gameVersion).find(Boolean)
+    : null;
   const dataInfo = cardData
-    ? `Data: ${cardData.cards.length} cards (${new Date(cardData.fetchedAt).toLocaleString()})`
+    ? `Data: ${cardData.cards.length} cards${gameVersion ? ' · ' + gameVersion : ''} (${new Date(cardData.fetchedAt).toLocaleString()})`
     : 'Data: not loaded';
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: dataInfo, enabled: false },
@@ -201,7 +230,7 @@ function buildTray() {
     },
     { label: `Scan now (${cfg.hotkeyScan})`, click: () => scan(false) },
     { label: `Hide badges (${cfg.hotkeyHide})`, click: hideOverlay },
-    { label: 'Refresh data from sts2.fun', click: () => refreshData(true) },
+    { label: 'Refresh data from untapped.gg', click: () => refreshData(true) },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() }
   ]));
@@ -223,6 +252,7 @@ app.whenReady().then(async () => {
 
   createOverlay();
   buildTray();
+  restTrayState(); // paused vs watching, per saved config
 
   const cfg = config.get();
   if (!globalShortcut.register(cfg.hotkeyScan, scan)) {

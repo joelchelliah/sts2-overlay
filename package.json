@@ -1,7 +1,7 @@
 {
   "name": "sts2-overlay",
   "version": "0.1.0",
-  "description": "Purely visual overlay for Slay the Spire 2: shows card win% from sts2.fun on card reward screens",
+  "description": "Purely visual overlay for Slay the Spire 2: shows card tier ratings from Baalorlord's tier lists on sts2.untapped.gg on card reward screens",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

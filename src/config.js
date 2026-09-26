@@ -11,13 +11,20 @@ const DEFAULTS = {
   hotkeyScan: 'CommandOrControl+Shift+1',
   hotkeyHide: 'CommandOrControl+Shift+2',
 
-  // Character whose stats to show: ironclad | silent | defect | regent | necrobinder | all
+  // Character whose ratings to show: ironclad | silent | defect | regent | necrobinder | all
+  // Card names are only unique within a character (every character has a "Strike"),
+  // so picking your current character gives the correct tier for those.
   character: 'all',
 
-  // Data source. ?character=ALL serves every character's cards in one page.
-  cardsUrl: 'https://www.sts2.fun/cards?character=ALL',
-  // Per-character fallback (site expects uppercase), used only if the ALL page yields nothing.
-  characterUrlTemplate: 'https://www.sts2.fun/cards?character={CHARACTER}',
+  // Data source: Baalorlord's per-character tier lists on sts2.untapped.gg.
+  // One page per character; each is scraped and merged into a single index.
+  tierListUrls: {
+    ironclad:    'https://sts2.untapped.gg/en/tier-list/004de170-026a-4dd4-a280-3b904be0b5d6',
+    silent:      'https://sts2.untapped.gg/en/tier-list/6d61ea21-0552-4c49-8bb5-a5c15530fc00',
+    defect:      'https://sts2.untapped.gg/en/tier-list/5a512e04-4583-4a16-9271-d46864c6cb4c',
+    necrobinder: 'https://sts2.untapped.gg/en/tier-list/43d0b41f-7d6d-4ce9-928e-c1310a413983',
+    regent:      'https://sts2.untapped.gg/en/tier-list/0e6c1e23-bec6-4887-a9e0-dbf49ede974d'
+  },
   dataMaxAgeHours: 24,
 
   // OCR: only scan this region of the screen (fractions of screen size).
@@ -27,14 +34,13 @@ const DEFAULTS = {
   // Minimum fuzzy-match similarity (0..1) between OCR text and a card name
   minMatchScore: 0.74,
 
-  // Badge placement as fractions of screen height, relative to the card-name row
+  // Badge placement as a fraction of screen height, relative to the card-name row
   // (all badges in a row share one y, anchored at the median detected name top).
-  // above = base win% badge (negative = above the card), below = upgraded win% badge.
-  badgeOffsets: { above: -0.10, below: 0.25 },
+  // Negative = above the card name. One tier badge per card.
+  badgeOffsets: { above: -0.10 },
 
   // Same, but for shop screens (detected automatically: card names in 2 rows).
-  // Shop cards are smaller, so the upgraded badge sits closer to the name row.
-  shopBadgeOffsets: { above: -0.08, below: 0.20 },
+  shopBadgeOffsets: { above: -0.08 },
 
   // Hide badges automatically after this many seconds (0 = stay until hotkeyHide).
   // Applies to manual (hotkey) scans; auto-scan badges clear when the screen changes.
@@ -53,20 +59,13 @@ const DEFAULTS = {
   // screenshots or screen recordings. Set false if you need to capture them.
   captureProtection: true,
 
-  // Show pick% next to win%
-  showPickRate: false,
+  // Show a "Good Upgrade" line under the tier badge for cards the tier list flags
+  // as worth upgrading (tierList good_upgrade).
+  showGoodUpgrade: true,
 
-  // Sample-size tiers (number of picks behind a win%):
-  //   >= reliable: shown normally
-  //   >= minimum:  shown with a warning emoji and red border
-  //   <  minimum:  shown as "–" with red border
-  sampleThresholds: { reliable: 200, minimum: 50 },
-
-  // Win% shown for non-upgraded cards:
-  //   'pooled' — base+upgraded picks combined (matches the site's default view)
-  //   'base'   — base variant only (matches the site's "Separate upgrades" view)
-  // Upgraded cards (name ending in +) always show upgraded-only stats.
-  baseWinRate: 'pooled'
+  // Use the tier colours from the tier list itself (S blue, A green, ... F red)
+  // rather than the overlay's own palette.
+  useTierColors: true
 };
 
 function ensureDir() {
@@ -84,19 +83,23 @@ function get() {
   } catch {
     try { fs.writeFileSync(FILE, JSON.stringify(DEFAULTS, null, 2)); } catch {}
   }
-  // Migrate stale defaults written by older versions
-  if (user.cardsUrl === 'https://www.sts2.fun/cards') delete user.cardsUrl;
-  if (user.characterUrlTemplate === 'https://www.sts2.fun/cards?character={character}') delete user.characterUrlTemplate;
-  delete user.labelOffset; // replaced by badgeOffsets
-  delete user.minSamples;  // replaced by sampleThresholds
-  // reset badgeOffsets saved in old units or old miscalibrated defaults
-  if (user.badgeOffsets && (
-    Math.abs(user.badgeOffsets.above) >= 1 || Math.abs(user.badgeOffsets.below) >= 1 ||
-    (user.badgeOffsets.above === -0.08 && user.badgeOffsets.below === 0.44)
-  )) {
+  // Migrate configs written by older versions
+  delete user.labelOffset;    // replaced by badgeOffsets
+  delete user.minSamples;     // replaced by sampleThresholds, then dropped
+  // sts2.fun era (win-rate data source) — no equivalent under tier lists
+  delete user.cardsUrl;
+  delete user.characterUrlTemplate;
+  delete user.sampleThresholds;
+  delete user.baseWinRate;
+  delete user.showPickRate;
+  // reset badgeOffsets saved in old units, or from the two-badge (win%/upgraded%) era
+  if (user.badgeOffsets && (Math.abs(user.badgeOffsets.above) >= 1 || 'below' in user.badgeOffsets)) {
     delete user.badgeOffsets;
   }
-  cached = { ...DEFAULTS, ...user };
+  if (user.shopBadgeOffsets && (Math.abs(user.shopBadgeOffsets.above) >= 1 || 'below' in user.shopBadgeOffsets)) {
+    delete user.shopBadgeOffsets;
+  }
+  cached = { ...DEFAULTS, ...user, tierListUrls: { ...DEFAULTS.tierListUrls, ...(user.tierListUrls || {}) } };
   return cached;
 }
 
