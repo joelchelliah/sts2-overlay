@@ -10,6 +10,12 @@ const capture = require('./src/capture');
 const ocr = require('./src/ocr');
 const { matchLines } = require('./src/match');
 
+// Tier orders 6+ are the relic-only scale, whose names are already prose.
+const FIRST_RELIC_TIER_ORDER = 6;
+
+// Selectable in the tray. 'colorless' is a tier-list source, not a playable
+// character, so it is deliberately absent: its ratings are merged in as the
+// fallback for anything the chosen character's own list doesn't rate.
 const CHARACTERS = ['all', 'ironclad', 'silent', 'defect', 'regent', 'necrobinder'];
 
 let overlayWin = null;
@@ -107,22 +113,33 @@ async function scan(auto = false) {
     }
 
     // Screen type from layout: reward screens have one row of card names,
-    // shops have two (5 class cards + 2 colorless). Shop cards are smaller,
-    // so they get their own offsets.
+    // shops have two or more (class cards, colorless cards, and a row of relics).
+    // Shop cards are smaller, so they get their own offsets.
     const isShop = rows.length > 1;
-    const off = isShop ? cfg.shopBadgeOffsets : cfg.badgeOffsets;
+    const cardOff = isShop ? cfg.shopBadgeOffsets : cfg.badgeOffsets;
 
-    // One tier badge per card, above the card name. Badges share row-level y
-    // positions: anchored at each row's median name top (names are aligned),
-    // offset by a fraction of screen height (game UI scales with resolution).
+    // One badge per item, above its name. Badges share row-level y positions:
+    // anchored at each row's median name top (names are aligned), offset by a
+    // fraction of screen height (game UI scales with resolution). A row of relics
+    // uses the relic offset — relic names sit closer to their art than card names
+    // do, so reusing the card offset would float the badge too high.
     const labels = rows.flatMap(row => {
+      const isRelicRow = row.every(m => m.card.kind === 'relic');
+      const off = isRelicRow ? cfg.relicBadgeOffsets : cardOff;
       const ys = row.map(m => m.line.y).sort((a, b) => a - b);
       const anchorY = ys[Math.floor(ys.length / 2)];
       const y = (anchorY + off.above * shot.height) / shot.scale;
       return row.map(m => ({
         x: (m.line.x + m.line.w / 2) / shot.scale,
         y,
-        text: m.card.tier ? `${m.card.tier} - tier` : '–',
+        // Relic tiers are already prose ("Always Amazing"); only the letter tiers
+        // read as a grade needing the " - tier" suffix.
+        text: m.card.tier
+          ? (m.card.kind === 'relic' && m.card.tierOrder >= FIRST_RELIC_TIER_ORDER
+              ? m.card.tier
+              : `${m.card.tier} - tier`)
+          : '–',
+        kind: m.card.kind || 'card',
         tier: m.card.tier || null,
         tierOrder: m.card.tierOrder ?? null,
         color: m.card.tierColor || null,   // the site's own colour, as a fallback
@@ -136,7 +153,8 @@ async function scan(auto = false) {
     overlayWin.showInactive();
     setTrayState('hit', matches.length);
     console.log(`[scan] ${isShop ? 'shop' : 'reward'}:`, matches.map(m =>
-      `${m.card.name}=${m.card.tier}${m.card.goodUpgrade ? '+up' : ''} (${m.score.toFixed(2)})`).join(', '));
+      `${m.card.name}${m.card.kind === 'relic' ? '[relic]' : ''}=${m.card.tier}` +
+      `${m.card.goodUpgrade ? '+up' : ''} (${m.score.toFixed(2)})`).join(', '));
 
     clearTimeout(hideTimer);
     // auto-scan badges persist until the screen changes; manual ones time out
@@ -207,8 +225,10 @@ function buildTray() {
   const gameVersion = cardData && cardData.sources
     ? Object.values(cardData.sources).map(s => s.gameVersion).find(Boolean)
     : null;
+  const relicCount = cardData ? cardData.cards.filter(c => c.kind === 'relic').length : 0;
   const dataInfo = cardData
-    ? `Data: ${cardData.cards.length} cards${gameVersion ? ' · ' + gameVersion : ''} (${new Date(cardData.fetchedAt).toLocaleString()})`
+    ? `Data: ${cardData.cards.length - relicCount} cards · ${relicCount} relics` +
+      `${gameVersion ? ' · ' + gameVersion : ''} (${new Date(cardData.fetchedAt).toLocaleString()})`
     : 'Data: not loaded';
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: dataInfo, enabled: false },

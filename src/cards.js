@@ -1,22 +1,31 @@
-// Card tier data from sts2.untapped.gg (Baalorlord's per-character tier lists).
+// Tier data from sts2.untapped.gg (Baalorlord's tier lists).
 //
-// Each character has its own tier-list page. The pages are server-rendered by
-// Next.js, so a plain HTTPS GET is enough — no browser, no SPA wait. The data we
-// want lives in the RSC flight payload inside `self.__next_f.push([1, "..."])`
-// script chunks, where it is JSON double-escaped (\\" for every quote).
+// Six pages are scraped: one per character, plus the colorless list. The pages are
+// server-rendered by Next.js, so a plain HTTPS GET is enough — no browser, no SPA
+// wait. The data we want lives in the RSC flight payload inside
+// `self.__next_f.push([1, "..."])` script chunks, JSON double-escaped (\\" for
+// every quote).
 //
 // Two things are pulled from each page:
 //
 //   1. The `"tierList"` object — the authority for ratings:
-//        tierList.tiers[] = [{ name: "S", order: 0, color: "#408abf", cards: [...] }, ...]
+//        tierList.tiers[] = [{ name: "S", order: 0, color: "#408abf", cards: [], relics: [] }, ...]
 //        tiers[].cards[]  = [{ card_id: "THE_SEALED_THRONE", good_upgrade: true, ... }]
-//      A card's rating is *positional*: there is no per-card score, the tier is
-//      whichever bucket the card's entry sits in. Tier orders 0-5 are S/A/B/C/D/F
-//      for cards; orders 6+ ("Always Amazing", ...) are the relic/potion scale and
-//      are always empty here, so they're skipped.
+//        tiers[].relics[] = [{ item_id: "DATA_DISK", ... }]  (colorless page only)
+//      A rating is *positional*: there is no per-item score, the tier is whichever
+//      bucket the item's entry sits in.
 //
-//   2. A `card_id -> display name` map, from the per-card render blocks:
+//      The page carries two parallel scales in one `tiers[]` array:
+//        orders 0-5  S/A/B/C/D/F              — all cards, and some relics
+//        orders 6-10 Always Amazing ... Almost Never — relics only
+//      Character pages only ever fill orders 0-5. The colorless page fills both:
+//      its 64 cards sit in 0-5, while its 130 relics are spread across the whole
+//      range (~30 in the letter buckets, the rest in the 6-10 scale). So relics
+//      are read from every tier, cards only from 0-5.
+//
+//   2. An `id -> display name` map, from the per-item render blocks:
 //        "item":{"type":"card","id":"STRIKE_REGENT","card":{"slug":..,"name":"Strike",..}}
+//        "item":{"type":"relic","id":"DATA_DISK","relic":{"slug":..,"name":"Data Disk",..}}
 //      Needed because OCR reads what the game prints ("Strike") while the tier
 //      list keys on ids ("STRIKE_REGENT"). Titleizing the id is only a fallback —
 //      it would turn STRIKE_REGENT into "Strike Regent" and never match.
@@ -30,11 +39,13 @@ const config = require('./config');
 const { normalize } = require('./match');
 
 const CACHE = path.join(config.DIR, 'cards-cache.json');
-const CACHE_VERSION = 5; // bump when the cached entry shape changes
+const CACHE_VERSION = 6; // bump when the cached entry shape changes
 const DEBUG_DIR = path.join(__dirname, '..', 'debug');
 
-// Tier orders 0..5 are the card scale; 6+ are the relic/potion scale (always empty).
+// Tier orders 0..5 are the letter scale (S..F); 6+ are the relic-only scale
+// ("Always Amazing" ... "Almost Never"). Cards never appear above 5.
 const MAX_CARD_TIER_ORDER = 5;
+const FIRST_RELIC_TIER_ORDER = 6;
 
 function fetchPage(url) {
   return new Promise((resolve, reject) => {
@@ -104,10 +115,13 @@ function objectAt(s, from) {
   return null;
 }
 
-// card_id -> display name, from the per-card render blocks in the flight payload.
-function extractNameMap(unescaped) {
+// id -> display name, from the per-item render blocks in the flight payload.
+// `kind` is "card" or "relic"; both blocks have the same shape, keyed by the kind.
+function extractNameMap(unescaped, kind) {
   const map = new Map();
-  const re = /"item":\{"type":"card","id":"([A-Z0-9_]+)","card":\{"slug":"[^"]*","id":"[^"]*","name":"((?:[^"\\]|\\.)*)"/g;
+  const re = new RegExp(
+    `"item":\\{"type":"${kind}","id":"([A-Z0-9_]+)","${kind}":\\{"slug":"[^"]*","id":"[^"]*","name":"((?:[^"\\\\]|\\\\.)*)"`,
+    'g');
   let m;
   while ((m = re.exec(unescaped))) {
     if (!map.has(m[1])) map.set(m[1], JSON.parse(`"${m[2]}"`));
@@ -123,7 +137,9 @@ function titleize(cardId) {
     .join(' ');
 }
 
-// One tier-list page -> [{ name, cardId, tier, tierOrder, tierColor, goodUpgrade, character }]
+// One tier-list page -> { cards: [{ name, id, kind, tier, tierOrder, tierColor,
+// goodUpgrade, character }], ... }. Cards and relics share the entry shape; `kind`
+// tells them apart, since the overlay labels them differently.
 function parseTierListPage(html, character) {
   const at = html.indexOf('\\"tierList\\":{');
   if (at < 0) throw new Error(`No tierList payload found for ${character} (site layout may have changed)`);
@@ -141,25 +157,29 @@ function parseTierListPage(html, character) {
     throw new Error(`tierList JSON parse failed for ${character}: ${e.message}`);
   }
 
-  const names = extractNameMap(unescaped);
+  const cardNames = extractNameMap(unescaped, 'card');
+  const relicNames = extractNameMap(unescaped, 'relic');
   const out = [];
   for (const tier of tierList.tiers || []) {
-    if (tier.order > MAX_CARD_TIER_ORDER) continue; // relic/potion scale
-    for (const c of tier.cards || []) {
-      const cardId = c.card_id || c.item_id;
-      if (!cardId) continue;
-      out.push({
-        name: names.get(cardId) || titleize(cardId),
-        cardId,
-        tier: tier.name,
-        tierOrder: tier.order,
-        tierColor: tier.color || null,
-        goodUpgrade: c.good_upgrade === true,
-        character
-      });
+    const common = { tier: tier.name, tierOrder: tier.order, tierColor: tier.color || null, character };
+    // Cards only use the letter scale; anything above it is a relic-only tier.
+    if (tier.order <= MAX_CARD_TIER_ORDER) {
+      for (const c of tier.cards || []) {
+        const id = c.card_id || c.item_id;
+        if (!id) continue;
+        out.push({ ...common, name: cardNames.get(id) || titleize(id), id, kind: 'card',
+                   goodUpgrade: c.good_upgrade === true });
+      }
+    }
+    // Relics span every tier, and have no good_upgrade — they aren't upgradable.
+    for (const r of tier.relics || []) {
+      const id = r.item_id || r.relic_id;
+      if (!id) continue;
+      out.push({ ...common, name: relicNames.get(id) || titleize(id), id, kind: 'relic',
+                 goodUpgrade: false });
     }
   }
-  if (!out.length) throw new Error(`tierList for ${character} contained no cards`);
+  if (!out.length) throw new Error(`tierList for ${character} contained no cards or relics`);
   return { cards: out, version: tierList.version || null, listName: tierList.name || null };
 }
 
@@ -216,15 +236,36 @@ async function getData(force = false) {
   }
 }
 
-// Map<normalizedName, card> for the chosen character.
+// Comparable rank for "which rating is better". Tier order alone is not comparable
+// across the two scales: a relic in "Always Amazing" (order 6) is the best a relic
+// can be, but would lose a naive `<` against any letter tier. Normalising the
+// relic scale onto the letter range keeps the two ends aligned. No relic is
+// currently rated on both scales, so this only guards against a future reshuffle.
+function rank(entry) {
+  return entry.tierOrder >= FIRST_RELIC_TIER_ORDER
+    ? entry.tierOrder - FIRST_RELIC_TIER_ORDER
+    : entry.tierOrder;
+}
+
+// Map<normalizedName, entry> for the chosen character.
 //
-// Card names are only unique *within* a character — every character has a "Strike"
-// and a "Defend", and they can sit in different tiers. With a character selected we
-// therefore prefer that character's entry; for 'all' we keep the best-rated one, so
-// an ambiguous name never reads worse than it might actually be.
+// Names are only unique *within* a list — every character has a "Strike" and a
+// "Defend", and they can sit in different tiers. The colorless list also overlaps
+// the character lists: ~24 colorless cards and ~10 relics per character are rated
+// in both places, generically on the colorless page and specifically on the
+// character's own. The character's rating is the better one to show (Finesse is B
+// colorless but S for Ironclad), so with a character selected it wins.
+//
+// Failing that we keep the best-rated entry, so an ambiguous name never reads
+// worse than it might actually be. Cards and relics are indexed together: no relic
+// name collides with a card name, so one map is enough.
+//
+// `character` is a playable character or 'all'; the colorless list is never a
+// selectable character, only a source, so its entries act purely as the fallback.
 function buildIndex(data, character) {
   const index = new Map();
   for (const c of data.cards) {
+    if (c.kind === 'relic' && config.get().showRelics === false) continue;
     const key = normalize(c.name);
     const isForChar = character !== 'all' && c.character === character;
     const existing = index.get(key);
@@ -234,7 +275,7 @@ function buildIndex(data, character) {
     }
     if (isForChar && !existing.__forChar) {
       index.set(key, { ...c, __forChar: isForChar });        // exact character wins
-    } else if (isForChar === existing.__forChar && c.tierOrder < existing.tierOrder) {
+    } else if (isForChar === existing.__forChar && rank(c) < rank(existing)) {
       index.set(key, { ...c, __forChar: isForChar });        // otherwise best tier wins
     }
   }

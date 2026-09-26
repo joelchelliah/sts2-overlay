@@ -57,9 +57,10 @@ function bestCardForText(text, cardIndex, minScore) {
 }
 
 // lines: [{text,x,y,w,h}] -> array of ROWS, each row = [{card, score, line}] sorted by x.
-// Matches are deduped by card, then clustered into horizontal bands (card names are
-// vertically aligned per row). Reward screens yield 1 row; shops yield 2 (5 class
-// cards on top, 2 colorless below). Singleton clusters are dropped as likely false
+// Matches are deduped by name, then clustered into horizontal bands (names are
+// vertically aligned per row). Reward screens yield 1 row; shops yield several
+// (class cards, colorless cards, and a row of relics), which the caller tells apart
+// by the kind of the items in each. Singleton clusters are dropped as likely false
 // positives — unless nothing else matched.
 function matchLines(lines, cardIndex, minScore, yTol = Infinity) {
   const byCard = new Map();

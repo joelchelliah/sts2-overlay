@@ -16,14 +16,19 @@ const DEFAULTS = {
   // so picking your current character gives the correct tier for those.
   character: 'all',
 
-  // Data source: Baalorlord's per-character tier lists on sts2.untapped.gg.
-  // One page per character; each is scraped and merged into a single index.
+  // Data source: Baalorlord's tier lists on sts2.untapped.gg. One page per
+  // character plus the colorless list; each is scraped and merged into a single
+  // index. The colorless page is where colorless cards and most relic ratings come
+  // from; character pages also rate ~10 relics each, and those ratings win when
+  // that character is selected (they differ a lot: Precarious Shears is
+  // "Always Amazing" for Defect and "Almost Never" for Ironclad).
   tierListUrls: {
     ironclad:    'https://sts2.untapped.gg/en/tier-list/004de170-026a-4dd4-a280-3b904be0b5d6',
     silent:      'https://sts2.untapped.gg/en/tier-list/6d61ea21-0552-4c49-8bb5-a5c15530fc00',
     defect:      'https://sts2.untapped.gg/en/tier-list/5a512e04-4583-4a16-9271-d46864c6cb4c',
     necrobinder: 'https://sts2.untapped.gg/en/tier-list/43d0b41f-7d6d-4ce9-928e-c1310a413983',
-    regent:      'https://sts2.untapped.gg/en/tier-list/0e6c1e23-bec6-4887-a9e0-dbf49ede974d'
+    regent:      'https://sts2.untapped.gg/en/tier-list/0e6c1e23-bec6-4887-a9e0-dbf49ede974d',
+    colorless:   'https://sts2.untapped.gg/en/tier-list/0a626c22-dc49-433e-ac6e-76cc9abf5684'
   },
   dataMaxAgeHours: 24,
 
@@ -41,6 +46,15 @@ const DEFAULTS = {
 
   // Same, but for shop screens (detected automatically: card names in 2 rows).
   shopBadgeOffsets: { above: -0.08 },
+
+  // Relics in shops sit in their own row and are smaller than cards, so their
+  // badges get their own offset. Relic names are matched the same way as cards.
+  relicBadgeOffsets: { above: -0.05 },
+
+  // Show relic ratings in addition to card ratings. Relics use their own tier
+  // scale ("Always Amazing" ... "Almost Never") shown verbatim, except for the
+  // ~30 relics the lists place in the S..F buckets.
+  showRelics: true,
 
   // Hide badges automatically after this many seconds (0 = stay until hotkeyHide).
   // Applies to manual (hotkey) scans; auto-scan badges clear when the screen changes.

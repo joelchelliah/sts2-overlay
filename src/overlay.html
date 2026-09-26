@@ -32,6 +32,15 @@
     color: #cfd4dc; margin-top: 1px; letter-spacing: 0.2px;
   }
   .badge .sub .check { color: #6fe08b; margin-right: 3px; }
+  /* Relic badges carry longer text ("Always Amazing") and sit over smaller art,
+     so they run a size down and cap their width rather than overlapping neighbours. */
+  .badge.relic {
+    font-size: 14px;
+    padding: 2px 8px;
+    max-width: 150px;
+    white-space: normal;
+    line-height: 1.15;
+  }
   /* Tier text is coloured inline (see TIER_COLORS); this is only for a card whose
      tier we couldn't determine. */
   .na { color: #9a9aa3; }
@@ -60,6 +69,13 @@
   // brightening the site's colour if we ever see a tier order we don't know.
   const TIER_COLORS = ['#55a8e0', '#63d97a', '#c8d64a', '#e8a83a', '#ec7f45', '#ef5f5f'];
 
+  // Relics are rated on a second, parallel scale (tier orders 6-10: "Always
+  // Amazing" ... "Almost Never") which the site paints with the same colours as
+  // S/A/B/C/F. Mapping order 6+ back onto the same ramp keeps one visual language:
+  // blue is the best thing on screen whether it's a card or a relic.
+  const RELIC_TIER_COLORS = ['#55a8e0', '#63d97a', '#c8d64a', '#e8a83a', '#ef5f5f'];
+  const FIRST_RELIC_TIER_ORDER = 6;
+
   function brighten(hex, amount = 0.42) {
     const m = /^#([0-9a-f]{6})$/i.exec(hex || '');
     if (!m) return null;
@@ -69,8 +85,12 @@
   }
 
   function tierColor(l) {
-    if (l.tierOrder !== null && TIER_COLORS[l.tierOrder]) return TIER_COLORS[l.tierOrder];
-    return brighten(l.color);
+    const o = l.tierOrder;
+    if (o === null || o === undefined) return brighten(l.color);
+    if (o >= FIRST_RELIC_TIER_ORDER) {
+      return RELIC_TIER_COLORS[o - FIRST_RELIC_TIER_ORDER] || brighten(l.color);
+    }
+    return TIER_COLORS[o] || brighten(l.color);
   }
 
   function esc(s) {
@@ -81,7 +101,7 @@
     clearBadges();
     for (const l of labels) {
       const el = document.createElement('div');
-      el.className = 'badge';
+      el.className = l.kind === 'relic' ? 'badge relic' : 'badge';
       // l.colored is false when useTierColors is off — badge stays plain white.
       const rgb = l.colored === false ? null : tierColor(l);
       const style = rgb ? ' style="color:' + rgb + '"' : '';
