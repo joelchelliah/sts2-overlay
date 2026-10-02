@@ -8,7 +8,7 @@ const config = require('./src/config');
 const cards = require('./src/cards');
 const capture = require('./src/capture');
 const ocr = require('./src/ocr');
-const { matchLines } = require('./src/match');
+const { matchLines, looksLikeCombat, LIST_X_TOL_FRAC } = require('./src/match');
 
 // Tier orders 6+ are the relic-only scale, whose names are already prose.
 const FIRST_RELIC_TIER_ORDER = 6;
@@ -39,8 +39,13 @@ let lastHitCount = 0;
 
 function setTrayState(state, detail) {
   trayState = state;
-  if (state === 'hit') lastHitCount = detail;
+  if (state === 'hit' || state === 'list') lastHitCount = detail;
   if (!tray) return;
+  if (state === 'list') {
+    tray.setTitle(`S2 ☰${detail}`);
+    tray.setToolTip(`STS2 Overlay — relic list (${detail} relics)`);
+    return;
+  }
   if (state === 'hit') {
     // Card count is the most useful confirmation: badges are on screen right now.
     tray.setTitle(`S2 ✓${detail}`);
@@ -82,8 +87,50 @@ function showStatus(msg, autoClearMs = 0) {
   if (autoClearMs) setTimeout(() => send('status', null), autoClearMs);
 }
 
+// ── Relic reference list: a full, browsable list of rated relics, toggled by
+// hotkey. Shops show relics as bare icons with no name on screen, so there is
+// nothing to OCR there; this is how you look one up instead.
+let relicsShown = false;
+
+async function toggleRelicList() {
+  if (relicsShown) {
+    relicsShown = false;
+    send('relics', null);
+    if (!overlayWin.webContents.isDestroyed()) overlayWin.hide();
+    restTrayState();
+    return;
+  }
+  try {
+    if (!cardData) cardData = await cards.getData();
+    const cfg = config.get();
+    const tiers = cards.relicTiers(cardData, cfg.character);
+    if (!tiers.length) { showStatus('No relic ratings loaded', 2500); return; }
+
+    const total = tiers.reduce((n, t) => n + t.relics.length, 0);
+    send('relics', {
+      title: `${total} relics · ${cfg.character === 'all' ? 'all characters' : cfg.character}`,
+      hint: `${cfg.hotkeyRelics} to close`,
+      tiers: tiers.map(t => ({
+        tier: t.tier,
+        tierOrder: t.tierOrder,
+        relics: t.relics
+      }))
+    });
+    relicsShown = true;
+    // The list covers the screen, so any badges under it are just noise.
+    clearTimeout(hideTimer);
+    send('clear');
+    overlayWin.showInactive();
+    setTrayState('list', total);
+  } catch (e) {
+    console.error('[relics]', e.message);
+    showStatus('Could not build relic list: ' + e.message.slice(0, 60), 4000);
+  }
+}
+
 function hideOverlay() {
   clearTimeout(hideTimer);
+  if (relicsShown) { relicsShown = false; send('relics', null); }
   send('clear');
   if (overlayWin) overlayWin.hide();
   restTrayState();
@@ -91,6 +138,8 @@ function hideOverlay() {
 
 async function scan(auto = false) {
   if (busy) return;
+  // A scan replaces the relic list rather than drawing badges underneath it.
+  if (relicsShown) { relicsShown = false; send('relics', null); }
   busy = true;
   setTrayState('scanning');
   const cfg = config.get();
@@ -100,9 +149,20 @@ async function scan(auto = false) {
 
     const shot = await capture.captureScreen();
     const lines = await ocr.recognize(shot.png, shot.width, shot.height);
+
+    // In combat the hand is cards you already own — no pick to inform, so skip it
+    // before the matching work rather than badging and then hiding.
+    if (cfg.skipInCombat !== false && looksLikeCombat(lines)) {
+      if (auto) hideOverlay();
+      else showStatus('In combat — nothing to rate', 2000);
+      restTrayState();
+      return;
+    }
+
     if (!cardData) cardData = await cards.getData();
     const index = cards.buildIndex(cardData, cfg.character);
-    const rows = matchLines(lines, index, cfg.minMatchScore, shot.height * 0.05);
+    const rows = matchLines(lines, index, cfg.minMatchScore,
+                            shot.height * 0.05, shot.width * LIST_X_TOL_FRAC);
     const matches = rows.flat();
 
     if (!matches.length) {
@@ -112,26 +172,40 @@ async function scan(auto = false) {
       return;
     }
 
-    // Screen type from layout: reward screens have one row of card names,
-    // shops have two or more (class cards, colorless cards, and a row of relics).
-    // Shop cards are smaller, so they get their own offsets.
-    const isShop = rows.length > 1;
+    // Two layouts, told apart by shape rather than by guessing the screen:
+    //
+    //  - Vertical relic list (act-start relic offer): every row holds one relic,
+    //    all sharing a left edge. Badges go to the *left* of each name — the names
+    //    are only ~150px apart vertically and have their description text to the
+    //    right, so there is no room above or beside them.
+    //  - Rows of cards (reward screens: one row; shops: two or more). Badges are
+    //    centred above the row, at a shared y anchored on the row's median name
+    //    top, offset by a fraction of screen height (the game UI scales with
+    //    resolution).
+    const isList = rows.length > 1 && rows.every(r => r.length === 1 && r[0].card.kind === 'relic');
+    const isShop = !isList && rows.length > 1;
     const cardOff = isShop ? cfg.shopBadgeOffsets : cfg.badgeOffsets;
 
-    // One badge per item, above its name. Badges share row-level y positions:
-    // anchored at each row's median name top (names are aligned), offset by a
-    // fraction of screen height (game UI scales with resolution). A row of relics
-    // uses the relic offset — relic names sit closer to their art than card names
-    // do, so reusing the card offset would float the badge too high.
     const labels = rows.flatMap(row => {
       const isRelicRow = row.every(m => m.card.kind === 'relic');
       const off = isRelicRow ? cfg.relicBadgeOffsets : cardOff;
       const ys = row.map(m => m.line.y).sort((a, b) => a - b);
-      const anchorY = ys[Math.floor(ys.length / 2)];
-      const y = (anchorY + off.above * shot.height) / shot.scale;
+      const rowY = ys[Math.floor(ys.length / 2)] + off.above * shot.height;
+      // Uniform user nudge, on top of whichever layout's offsets applied. Computed
+      // in screenshot pixels like everything else here, then converted to screen
+      // points once, at the end.
+      const nudgeX = cfg.badgeNudge.x * shot.width;
+      const nudgeY = cfg.badgeNudge.y * shot.height;
       return row.map(m => ({
-        x: (m.line.x + m.line.w / 2) / shot.scale,
-        y,
+        // In a list the badge is right-aligned into the gutter left of the name;
+        // otherwise centred on it. `anchor` tells the overlay which way to hang.
+        x: ((isList
+          ? m.line.x + cfg.relicListBadgeOffsets.x * shot.width
+          : m.line.x + m.line.w / 2) + nudgeX) / shot.scale,
+        y: ((isList
+          ? m.line.y + m.line.h / 2 + cfg.relicListBadgeOffsets.y * shot.height
+          : rowY) + nudgeY) / shot.scale,
+        anchor: isList ? 'right' : 'center',
         // Relic tiers are already prose ("Always Amazing"); only the letter tiers
         // read as a grade needing the " - tier" suffix.
         text: m.card.tier
@@ -152,7 +226,7 @@ async function scan(auto = false) {
     send('labels', labels);
     overlayWin.showInactive();
     setTrayState('hit', matches.length);
-    console.log(`[scan] ${isShop ? 'shop' : 'reward'}:`, matches.map(m =>
+    console.log(`[scan] ${isList ? 'relic offer' : isShop ? 'shop' : 'reward'}:`, matches.map(m =>
       `${m.card.name}${m.card.kind === 'relic' ? '[relic]' : ''}=${m.card.tier}` +
       `${m.card.goodUpgrade ? '+up' : ''} (${m.score.toFixed(2)})`).join(', '));
 
@@ -168,12 +242,24 @@ async function scan(auto = false) {
   }
 }
 
-// ── Auto-scan: poll a tiny thumbnail; on screen change hide badges, and once the
-// screen settles (one quiet interval) run a scan. Cheap while idle: one ~48px
-// screenshot per interval, full OCR only after actual changes.
+// ── Auto-scan: poll a tiny thumbnail and scan when the screen changes.
+//
+// Game screens are never perfectly still — ambient animation (water, torchlight,
+// drifting backgrounds) moves ~8% of a 48px thumbnail between any two frames,
+// while an actual screen transition moves ~50%. Two consequences shape this loop:
+//
+//   - The change threshold has to sit above the animation, not just above sensor
+//     noise, or every frame reads as a transition.
+//   - Waiting for a *quiet* frame before scanning never succeeds on an animated
+//     screen. So a change schedules a scan a beat later instead of requiring
+//     stillness, and `settleTicks` is what gives a transition time to finish.
+//
+// Badges are also not dropped just because pixels moved: they are cleared when a
+// scan finds nothing (we left the screen), which is the thing we actually care
+// about. Otherwise ambient motion would wipe them a second after they appear.
 let autoTimer = null;
 let prevThumb = null;
-let dirty = true; // scan once on startup
+let pending = 1; // ticks until the next scan; 1 = scan on the first tick
 
 function setAutoScan(enabled) {
   config.set({ autoScan: enabled });
@@ -182,21 +268,20 @@ function setAutoScan(enabled) {
   prevThumb = null;
   if (!enabled) { setTrayState('paused'); return; }
   restTrayState();
-  dirty = true;
+  pending = 1;
   const cfg = config.get();
   autoTimer = setInterval(async () => {
-    if (busy) return;
+    // The relic list is a deliberate, hotkey-held view: auto-scan would find no
+    // cards behind it and hide the overlay a couple of seconds after it opened.
+    if (busy || relicsShown) return;
     try {
       const thumb = await capture.captureThumbnail();
       const changed = capture.diffFraction(prevThumb, thumb) > cfg.autoScanChangedFraction;
       prevThumb = thumb;
-      if (changed) {
-        dirty = true;
-        hideOverlay(); // stale badges shouldn't linger over a new screen
-      } else if (dirty) {
-        dirty = false;
-        await scan(true);
-      }
+      // A change (re)starts the settle countdown, so a multi-frame transition
+      // scans once at the end rather than once per frame.
+      if (changed) pending = Math.max(1, cfg.autoScanSettleTicks);
+      else if (pending > 0 && --pending === 0) await scan(true);
     } catch (e) {
       console.error('[auto]', e.message);
     }
@@ -221,7 +306,7 @@ function buildTray() {
     tray = new Tray(nativeImage.createEmpty());
   }
   // Rebuilding the menu must not blank the indicator — repaint the current state.
-  setTrayState(trayState, trayState === 'hit' ? lastHitCount : undefined);
+  setTrayState(trayState, (trayState === 'hit' || trayState === 'list') ? lastHitCount : undefined);
   const gameVersion = cardData && cardData.sources
     ? Object.values(cardData.sources).map(s => s.gameVersion).find(Boolean)
     : null;
@@ -250,6 +335,7 @@ function buildTray() {
     },
     { label: `Scan now (${cfg.hotkeyScan})`, click: () => scan(false) },
     { label: `Hide badges (${cfg.hotkeyHide})`, click: hideOverlay },
+    { label: `Relic list (${cfg.hotkeyRelics})`, click: toggleRelicList },
     { label: 'Refresh data from untapped.gg', click: () => refreshData(true) },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() }
@@ -279,10 +365,22 @@ app.whenReady().then(async () => {
     console.error(`Could not register hotkey ${cfg.hotkeyScan}`);
   }
   globalShortcut.register(cfg.hotkeyHide, hideOverlay);
+  if (!globalShortcut.register(cfg.hotkeyRelics, toggleRelicList)) {
+    console.error(`Could not register hotkey ${cfg.hotkeyRelics}`);
+  }
 
   refreshData(!!process.env.FORCE_REFRESH); // warm the cache in the background (FORCE_REFRESH=1 rescrapes)
   if (cfg.autoScan) setAutoScan(true);
-  console.log(`STS2 Overlay running. Auto-scan: ${cfg.autoScan ? 'on' : 'off'}  Scan: ${cfg.hotkeyScan}  Hide: ${cfg.hotkeyHide}`);
+  console.log(`STS2 Overlay running. Auto-scan: ${cfg.autoScan ? 'on' : 'off'}  Scan: ${cfg.hotkeyScan}  Hide: ${cfg.hotkeyHide}  Relics: ${cfg.hotkeyRelics}`);
+  // Editing src/config.js only changes the *defaults*: this file overrides them and
+  // is what actually takes effect, so print the path and the live badge offsets.
+  // Without this, tuning the wrong file looks like the settings doing nothing.
+  console.log(`[config] editing ${config.FILE} (restart to apply)`);
+  console.log(`[config] badgeNudge ${JSON.stringify(cfg.badgeNudge)}` +
+              `  relicList ${JSON.stringify(cfg.relicListBadgeOffsets)}` +
+              `  reward ${JSON.stringify(cfg.badgeOffsets)}` +
+              `  shop ${JSON.stringify(cfg.shopBadgeOffsets)}` +
+              `  relicRow ${JSON.stringify(cfg.relicBadgeOffsets)}`);
 });
 
 app.on('will-quit', () => globalShortcut.unregisterAll());

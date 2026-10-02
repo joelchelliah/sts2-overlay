@@ -282,4 +282,31 @@ function buildIndex(data, character) {
   return index;
 }
 
-module.exports = { getData, refresh, buildIndex, parseTierListPage };
+// All rated relics for the chosen character, grouped into tiers, best first.
+// Used by the relic-list overlay: the shop shows relics as bare icons with no
+// name, so there is nothing to OCR there — a browsable list is the fallback.
+//
+// Tiers are ordered by rank(), not tierOrder, because the two scales interleave:
+// "Always Amazing" is order 6 but is the *best* a relic can be, so sorting on the
+// raw order would file it below an F.
+function relicTiers(data, character) {
+  const index = buildIndex(data, character);
+  const tiers = new Map();
+  for (const entry of index.values()) {
+    if (entry.kind !== 'relic') continue;
+    if (!tiers.has(entry.tier)) {
+      tiers.set(entry.tier, {
+        tier: entry.tier,
+        tierOrder: entry.tierOrder,
+        rank: rank(entry),
+        relics: []
+      });
+    }
+    tiers.get(entry.tier).relics.push(entry.name);
+  }
+  return [...tiers.values()]
+    .sort((a, b) => a.rank - b.rank || a.tierOrder - b.tierOrder)
+    .map(t => ({ ...t, relics: t.relics.sort((a, b) => a.localeCompare(b)) }));
+}
+
+module.exports = { getData, refresh, buildIndex, parseTierListPage, relicTiers };

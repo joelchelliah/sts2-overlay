@@ -12,6 +12,9 @@
   }
   .badge {
     position: absolute;
+    /* Default: centred above a card name. `.anchor-right` instead hangs the badge
+       to the left of its anchor point and centres it on that line's middle — for
+       the act-start relic list, where names are stacked with no room above them. */
     transform: translateX(-50%);
     background: rgba(10, 10, 14, 0.82);
     border: 1px solid rgba(255, 255, 255, 0.25);
@@ -34,16 +37,78 @@
   .badge .sub .check { color: #6fe08b; margin-right: 3px; }
   /* Relic badges carry longer text ("Always Amazing") and sit over smaller art,
      so they run a size down and cap their width rather than overlapping neighbours. */
+  /* Relic badges run smaller than card ones: their tier names are long words
+     ("Always Amazing") rather than a single letter, and relics sit closer together
+     than cards do, so a card-sized badge crowds its neighbours. */
   .badge.relic {
-    font-size: 14px;
-    padding: 2px 8px;
-    max-width: 150px;
+    font-size: 12px;
+    padding: 2px 7px;
+    border-radius: 6px;
+    max-width: 130px;
     white-space: normal;
     line-height: 1.15;
+  }
+  .badge.anchor-right {
+    transform: translate(-100%, -50%);
+    text-align: right;
+    white-space: nowrap;   /* the gutter is wide; let it run rather than wrap */
+    max-width: none;
   }
   /* Tier text is coloured inline (see TIER_COLORS); this is only for a card whose
      tier we couldn't determine. */
   .na { color: #9a9aa3; }
+  /* Relic reference list (hotkey-toggled). The shop shows relics as bare icons
+     with no name to OCR, so this is the fallback: the whole rated set, grouped by
+     tier. 130 relics can't fit in one column on any screen, so tiers flow into
+     columns and the panel scales itself down if it would overflow — the overlay is
+     click-through, so nothing here can be scrolled. */
+  #relics {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(6, 7, 10, 0.88);
+  }
+  #relics.on { display: flex; }
+  #relics-inner {
+    transform-origin: center center;
+    padding: 18px 22px;
+    max-width: 96vw;
+  }
+  #relics h1 {
+    margin: 0 0 12px;
+    font-size: 15px;
+    font-weight: 700;
+    color: #e8ebf0;
+    letter-spacing: 0.3px;
+    text-align: center;
+  }
+  #relics h1 .hint { color: #8b929e; font-weight: 600; margin-left: 8px; }
+  .tiers {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 10px 18px;
+  }
+  .tier-group { break-inside: avoid; }
+  .tier-head {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    margin-bottom: 3px;
+    white-space: nowrap;
+  }
+  .tier-head .count { color: #8b929e; font-weight: 600; margin-left: 5px; }
+  .tier-group ul { margin: 0; padding: 0; list-style: none; }
+  .tier-group li {
+    font-size: 11px;
+    font-weight: 500;
+    color: #d3d8e0;
+    line-height: 1.45;
+    white-space: nowrap;
+  }
   #status {
     position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
     background: rgba(10,10,14,0.75); color: #ddd; border-radius: 6px;
@@ -52,6 +117,7 @@
 </style>
 </head>
 <body>
+<div id="relics"><div id="relics-inner"><h1></h1><div class="tiers"></div></div></div>
 <div id="status"></div>
 <script>
   const { ipcRenderer } = require('electron');
@@ -101,7 +167,8 @@
     clearBadges();
     for (const l of labels) {
       const el = document.createElement('div');
-      el.className = l.kind === 'relic' ? 'badge relic' : 'badge';
+      el.className = 'badge' + (l.kind === 'relic' ? ' relic' : '') +
+                     (l.anchor === 'right' ? ' anchor-right' : '');
       // l.colored is false when useTierColors is off — badge stays plain white.
       const rgb = l.colored === false ? null : tierColor(l);
       const style = rgb ? ' style="color:' + rgb + '"' : '';
@@ -112,6 +179,47 @@
       el.style.top = l.y + 'px';
       document.body.appendChild(el);
     }
+  });
+
+  // ── Relic reference list ────────────────────────────────────────────────────
+  const relicsEl = document.getElementById('relics');
+  const relicsInner = document.getElementById('relics-inner');
+
+  // A tier group's colour comes from the same ramp the badges use, so a tier reads
+  // the same here as it does on a card.
+  function tierColorFor(tierOrder, fallback) {
+    return tierColor({ tierOrder, color: fallback });
+  }
+
+  ipcRenderer.on('relics', (_e, payload) => {
+    if (!payload) { relicsEl.classList.remove('on'); return; }
+
+    relicsInner.querySelector('h1').innerHTML =
+      esc(payload.title) + '<span class="hint">' + esc(payload.hint) + '</span>';
+
+    const tiers = relicsInner.querySelector('.tiers');
+    tiers.innerHTML = '';
+    for (const g of payload.tiers) {
+      const col = document.createElement('div');
+      col.className = 'tier-group';
+      const rgb = tierColorFor(g.tierOrder, g.color);
+      col.innerHTML =
+        '<div class="tier-head"' + (rgb ? ' style="color:' + rgb + '"' : '') + '>' +
+          esc(g.tier) + '<span class="count">' + g.relics.length + '</span>' +
+        '</div><ul>' +
+        g.relics.map(n => '<li>' + esc(n) + '</li>').join('') +
+        '</ul>';
+      tiers.appendChild(col);
+    }
+
+    // Show first so the layout has real dimensions, then scale to fit. 130 rows
+    // overflow a short window, and a click-through overlay can't be scrolled.
+    relicsEl.classList.add('on');
+    relicsInner.style.transform = 'scale(1)';
+    const fit = Math.min(1,
+      (window.innerHeight - 24) / relicsInner.offsetHeight,
+      (window.innerWidth - 24) / relicsInner.offsetWidth);
+    if (fit < 1) relicsInner.style.transform = 'scale(' + fit.toFixed(3) + ')';
   });
 
   ipcRenderer.on('clear', () => { clearBadges(); statusEl.style.display = 'none'; });
